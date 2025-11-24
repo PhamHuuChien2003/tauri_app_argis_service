@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "new-skeleton-app",
+  "productName": "goong-arcgis-service",
   "version": "0.1.0",
   "identifier": "com.goongpoiservice.tauriapp",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "new-skeleton-app",
+        "title": "goong-arcgis-service",
         "width": 800,
         "height": 600,
         "resizable": true,
