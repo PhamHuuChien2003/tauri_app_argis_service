@@ -1,12 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tiny_http::{Header, Method, Response, Server};
-use tauri::{Manager, Window, Emitter, WebviewWindow};
+use tauri::{Manager, Emitter};
 use reqwest;
 
 #[derive(Deserialize)]
@@ -123,13 +122,14 @@ struct Compound {
 
 // State để lưu trữ window và dữ liệu mới nhất
 struct AppState {
-    window: Arc<Mutex<Option<WebviewWindow>>>, 
+    window: Arc<Mutex<Option<tauri::WebviewWindow>>>,
     latest_data: Arc<Mutex<Option<ExampleResult>>>,
+    pending_requests: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<ExampleResult>>>>,
 }
 
 // Hàm gọi API Goong.io
 async fn call_goong_api(lat: f64, lng: f64) -> Result<ExampleResult, Box<dyn std::error::Error>> {
-    let api_key = "T4B6StzJYTsTEyxA0u9I01593mA1yclUffVMODpx"; // Thay YOUR_API_KEY bằng API key thực tế
+    let api_key = "T4B6StzJYTsTEyxA0u9I01593mA1yclUffVMODpx";
     let url = format!(
         "https://rsapi-test.goong.io/v2/geocode?latlng={},{}&limit=5&api_key={}&has_deprecated_administrative_unit=true",
         lat, lng, api_key
@@ -416,6 +416,16 @@ fn start_local_server(app_state: Arc<AppState>) {
                 // Clone app_state để sử dụng trong async block
                 let state_clone = Arc::clone(&app_state);
                 
+                // Tạo channel để đợi confirm từ UI
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                
+                // Thêm request vào pending
+                {
+                    if let Ok(mut pending) = state_clone.pending_requests.lock() {
+                        pending.push(tx);
+                    }
+                }
+                
                 // Tạo runtime cho async function
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 
@@ -427,33 +437,45 @@ fn start_local_server(app_state: Arc<AppState>) {
                                 *latest_data = Some(result.clone());
                             }
                             
-                            // Gửi sự kiện đến frontend
+                            // Gửi sự kiện đến frontend để hiển thị popup
                             if let Ok(window_lock) = state_clone.window.lock() {
                                 if let Some(window) = &*window_lock {
-                                    let _ = window.emit("new-data", &result); 
-                                    println!("Emitted new-data event to frontend");
+                                    let _ = window.emit("show-confirm-dialog", &result); 
+                                    println!("Emitted show-confirm-dialog event to frontend");
                                 }
                             }
-                            result
+                            
+                            // Đợi confirm từ UI (timeout sau 30 giây)
+                            match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+                                Ok(Ok(confirmed_result)) => {
+                                    println!("Request confirmed by user");
+                                    confirmed_result
+                                }
+                                Ok(Err(_)) => {
+                                    println!("Confirm channel error");
+                                    ExampleResult {
+                                        status: "error".into(),
+                                        address: "User confirmation failed".into(),
+                                        ..Default::default()
+                                    }
+                                }
+                                Err(_) => {
+                                    println!("Confirm timeout");
+                                    ExampleResult {
+                                        status: "error".into(),
+                                        address: "Confirmation timeout".into(),
+                                        ..Default::default()
+                                    }
+                                }
+                            }
                         },
                         Err(e) => {
                             println!("Error calling Goong API: {}", e);
-                            let error_result = ExampleResult {
+                            ExampleResult {
                                 status: "error".into(),
                                 address: format!("API Error: {}", e),
-                                province: "".into(),
-                                district: "".into(),
-                                ward: "".into(),
                                 ..Default::default()
-                            };
-                            
-                            // Gửi sự kiện lỗi đến frontend
-                            if let Ok(window_lock) = state_clone.window.lock() {
-                                if let Some(window) = &*window_lock {
-                                    let _ = window.emit("new-data", &error_result);
-                                }
                             }
-                            error_result
                         }
                     }
                 });
@@ -481,6 +503,91 @@ fn start_local_server(app_state: Arc<AppState>) {
                 .unwrap();
         }
     });
+}
+
+// ==================== TAURI COMMANDS ====================
+
+// Command để confirm kết quả
+#[tauri::command]
+fn confirm_result(result: ExampleResult, state: tauri::State<Arc<AppState>>) -> bool {
+    println!("Confirming result: {:?}", result);
+    
+    if let Ok(mut pending) = state.pending_requests.lock() {
+        if let Some(tx) = pending.pop() {
+            let _ = tx.send(result);
+            return true;
+        }
+    }
+    false
+}
+
+// Command để reject kết quả
+#[tauri::command]
+fn reject_result(state: tauri::State<Arc<AppState>>) -> bool {
+    println!("Rejecting result");
+    
+    if let Ok(mut pending) = state.pending_requests.lock() {
+        if let Some(tx) = pending.pop() {
+            let error_result = ExampleResult {
+                status: "rejected".into(),
+                address: "User rejected the result".into(),
+                ..Default::default()
+            };
+            let _ = tx.send(error_result);
+            return true;
+        }
+    }
+    false
+}
+
+// Command để mở rộng cửa sổ
+#[tauri::command]
+async fn expand_window(window: tauri::Window) -> Result<(), String> {
+    println!("Expanding window");
+    
+    window.set_size(tauri::Size::Logical(tauri::LogicalSize { 
+        width: 800.0, 
+        height: 600.0 
+    })).map_err(|e| e.to_string())?;
+    
+    window.center().map_err(|e| e.to_string())?;
+    window.set_always_on_top(true).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+// Command để thu nhỏ cửa sổ
+#[tauri::command]
+async fn collapse_window(window: tauri::Window) -> Result<(), String> {
+    println!("Collapsing window");
+    
+    window.set_size(tauri::Size::Logical(tauri::LogicalSize { 
+        width: 100.0, 
+        height: 60.0 
+    })).map_err(|e| e.to_string())?;
+    
+    // Đặt vị trí góc trên bên phải
+    if let Ok(monitor) = window.primary_monitor() {
+        if let Some(monitor) = monitor {
+            let screen_size = monitor.size();
+            let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                x: screen_size.width as f64 - 120.0,
+                y: 20.0,
+            }));
+        }
+    }
+    
+    Ok(())
+}
+
+// Command để lấy dữ liệu mới nhất
+#[tauri::command]
+fn get_latest_data(state: tauri::State<Arc<AppState>>) -> Option<ExampleResult> {
+    if let Ok(data) = state.latest_data.lock() {
+        data.clone()
+    } else {
+        None
+    }
 }
 
 // Implement Default cho ExampleResult để dễ xử lý lỗi
@@ -526,29 +633,49 @@ impl Default for ExampleResult {
     }
 }
 
-#[tauri::command]
-fn get_latest_data(state: tauri::State<Arc<AppState>>) -> Option<ExampleResult> {
-    if let Ok(data) = state.latest_data.lock() {
-        data.clone()
-    } else {
-        None
-    }
-}
-
 fn main() {
     let app_state = Arc::new(AppState {
         window: Arc::new(Mutex::new(None)),
         latest_data: Arc::new(Mutex::new(None)),
+        pending_requests: Arc::new(Mutex::new(Vec::new())),
     });
 
     let state_clone = Arc::clone(&app_state);
 
     tauri::Builder::default()
         .manage(app_state)
-        .invoke_handler(tauri::generate_handler![get_latest_data])
+        .invoke_handler(tauri::generate_handler![
+            get_latest_data, 
+            confirm_result, 
+            reject_result,
+            expand_window,
+            collapse_window
+        ])
         .setup(move |app| {
             let main_window = app.get_webview_window("main").unwrap();
             
+            // Cấu hình window floating
+            main_window.set_always_on_top(true).unwrap();
+            main_window.set_decorations(false).unwrap();
+            main_window.set_skip_taskbar(true).unwrap();
+            
+            // Đặt kích thước nhỏ
+            main_window.set_size(tauri::Size::Logical(tauri::LogicalSize { 
+                width: 100.0, 
+                height: 60.0 
+            })).unwrap();
+            
+            // Đặt vị trí góc trên bên phải
+            if let Ok(monitor) = main_window.primary_monitor() {
+                if let Some(monitor) = monitor {
+                    let screen_size = monitor.size();
+                    let _ = main_window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                        x: screen_size.width as f64 - 120.0,
+                        y: 23.0,
+                    }));
+                }
+            }
+
             // Lưu window reference vào state
             if let Ok(mut window_lock) = state_clone.window.lock() {
                 *window_lock = Some(main_window);
