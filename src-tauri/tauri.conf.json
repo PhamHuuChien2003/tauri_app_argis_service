@@ -10,8 +10,10 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
         "title": "goong-arcgis-service",
         "width": 100,
         "height": 60,
