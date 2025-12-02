@@ -14,7 +14,6 @@ use tauri::{
     tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
     generate_context,
 };
-// use tauri_plugin_shell::ShellExt;
 use reqwest;
 
 #[derive(Deserialize)]
@@ -113,13 +112,12 @@ pub struct ExampleResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub longitude: Option<f64>,
 }
-// Cấu hình API mới với custom URL
+
+// Cấu hình API với base_url
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
-
 struct ApiConfig {
-    custom_url: String,
-    opacity: f64,                                                                                                                                                     
+    base_url: String,
+    opacity: f64,
 }
 
 // State để lưu trữ window và dữ liệu mới nhất
@@ -187,30 +185,50 @@ fn get_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(path)
 }
 
-// Hàm gọi Custom API
-async fn call_custom_api(lat: f64, lng: f64, custom_url: &str) -> Result<ExampleResult, Box<dyn std::error::Error>> {
-    let url = custom_url
-        .replace("{lat}", &lat.to_string())
-        .replace("{lng}", &lng.to_string())
-        .replace("{long}", &lng.to_string()); // Support both {lng} and {long}
-
-    println!("Calling Custom API: {}", url);
+// Hàm gọi Geocode API để lấy thông tin cơ bản và place_id
+async fn call_geocode_api(lat: f64, lng: f64, base_url: &str) -> Result<ExampleResult, Box<dyn std::error::Error>> {
+    let url = format!("{}/geocode?latlng={},{}", base_url, lat, lng);
+    println!("Calling Geocode API: {}", url);
 
     let client = reqwest::Client::new();
     let response = client.get(&url).send().await?;
     
     if !response.status().is_success() {
-        return Err(format!("API request failed with status: {}", response.status()).into());
+        return Err(format!("Geocode API request failed with status: {}", response.status()).into());
     }
 
     let response_text = response.text().await?;
-    println!("Custom API response: {}", response_text);
+    println!("Geocode API response: {}", response_text);
 
     // Parse response từ Google Geocoding API
-    let google_response: serde_json::Value = serde_json::from_str(&response_text)?;
+    let geocode_response: serde_json::Value = serde_json::from_str(&response_text)?;
     
-    // Tạo ExampleResult từ dữ liệu Google Geocoding
-    let result = parse_google_geocoding_response(google_response);
+    // Tạo ExampleResult từ dữ liệu geocode
+    let mut result = parse_google_geocoding_response(geocode_response);
+    
+    Ok(result)
+}
+
+// Hàm gọi Placedetails API để lấy thêm thông tin chi tiết
+async fn call_placedetails_api(place_id: &str, base_url: &str) -> Result<ExampleResult, Box<dyn std::error::Error>> {
+    let url = format!("{}/placedetails?place_id={}", base_url, place_id);
+    println!("Calling Placedetails API: {}", url);
+
+    let client = reqwest::Client::new();
+    let response = client.get(&url).send().await?;
+    
+    if !response.status().is_success() {
+        return Err(format!("Placedetails API request failed with status: {}", response.status()).into());
+    }
+
+    let response_text = response.text().await?;
+    println!("Placedetails API response: {}", response_text);
+
+    // Parse response từ Google Places Details API
+    let placedetails_response: serde_json::Value = serde_json::from_str(&response_text)?;
+    
+    // Tạo ExampleResult từ dữ liệu placedetails
+    let result = parse_placedetails_response(placedetails_response);
     
     Ok(result)
 }
@@ -323,6 +341,75 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
     result
 }
 
+// Hàm parse dữ liệu từ Google Places Details API
+pub fn parse_placedetails_response(response: Value) -> ExampleResult {
+    let mut result = ExampleResult::default();
+
+    // Lấy status
+    if let Some(status) = response["status"].as_str() {
+        if status != "OK" {
+            result.status = status.to_string();
+            return result;
+        }
+    }
+
+    let detail = &response["result"];
+
+    // Lấy name cho poi_vn
+    if let Some(name) = detail["name"].as_str() {
+        result.poi_vn = Some(name.to_string());
+    }
+
+    // Lấy formatted_phone_number cho phone
+    if let Some(phone) = detail["formatted_phone_number"].as_str() {
+        result.phone = Some(phone.to_string());
+    }
+
+    // Lấy website cho web
+    if let Some(web) = detail["website"].as_str() {
+        result.web = Some(web.to_string());
+    }
+
+    // Lấy url cho source
+    // if let Some(url) = detail["url"].as_str() {
+    //     result.source = Some(url.to_string());
+    // }
+
+    result
+}
+
+// Hàm gọi Custom API (kết hợp geocode và placedetails)
+async fn call_custom_api(lat: f64, lng: f64, base_url: &str) -> Result<ExampleResult, Box<dyn std::error::Error>> {
+    // Bước 1: Gọi geocode API
+    let mut result = call_geocode_api(lat, lng, base_url).await?;
+
+    // Bước 2: Nếu có place_id, gọi placedetails API để lấy thêm thông tin
+    if let Some(place_id) = &result.google_id {
+        match call_placedetails_api(place_id, base_url).await {
+            Ok(details) => {
+                // Cập nhật thông tin từ placedetails vào result
+                if let Some(poi_vn) = details.poi_vn {
+                    result.poi_vn = Some(poi_vn);
+                }
+                if let Some(phone) = details.phone {
+                    result.phone = Some(phone);
+                }
+                if let Some(web) = details.web {
+                    result.web = Some(web);
+                }
+                if let Some(source) = details.source {
+                    result.source = Some(source);
+                }
+            }
+            Err(e) => {
+                println!("Error calling placedetails API: {}", e);
+                // Không fail vì geocode đã thành công, chỉ in lỗi
+            }
+        }
+    }
+
+    Ok(result)
+}
 
 fn start_local_server(app_state: Arc<AppState>) {
     thread::spawn(move || {
@@ -404,10 +491,10 @@ fn start_local_server(app_state: Arc<AppState>) {
                         }
                     };
 
-                    let result = if !config.custom_url.is_empty() {
-                        call_custom_api(parsed.lat, parsed.lng, &config.custom_url).await
+                    let result = if !config.base_url.is_empty() {
+                        call_custom_api(parsed.lat, parsed.lng, &config.base_url).await
                     } else {
-                        Err("Custom URL not configured".into())
+                        Err("Base URL not configured".into())
                     };
 
                     match result {
@@ -664,8 +751,6 @@ async fn open_multiple_map_views(
     Ok(())
 }
 
-
-
 impl Default for ExampleResult {
     fn default() -> Self {
         Self {
@@ -714,7 +799,7 @@ impl Default for ExampleResult {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            custom_url: "".to_string(),
+            base_url: "".to_string(),
             opacity: 0.8,
         }
     }
@@ -740,7 +825,7 @@ fn main() {
             // Tạo system tray menu
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide Window", true, None::<&str>)?;
-            let set_url_item = MenuItem::with_id(app, "set_url", "Set Custom URL", true, None::<&str>)?;
+            let set_url_item = MenuItem::with_id(app, "set_url", "Set Base URL", true, None::<&str>)?;
             let opacity_item = MenuItem::with_id(app, "opacity", "Set Opacity", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             
