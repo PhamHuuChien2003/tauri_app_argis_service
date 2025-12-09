@@ -43,9 +43,21 @@
 		longitude?: number;
 	}
 
+	interface MapConfig {
+		google: boolean;
+		openstreetmap: boolean;
+		bing: boolean;
+		streetviewvn: boolean;
+		mapillary: boolean;
+		vietbando: boolean;
+		herewego: boolean;
+		wikimapia: boolean;
+	}
+
 	interface ApiConfig {
 		base_url: string;
 		opacity: number;
+		maps: MapConfig;
 	}
 
 	interface MapPoint {
@@ -61,10 +73,21 @@
 	const showConfig = writable<boolean>(false);
 	const showUrlInput = writable<boolean>(false);
 	const showOpacitySelector = writable<boolean>(false);
+	const showMapSelector = writable<boolean>(false);
 	const isProcessing = writable<boolean>(false);
 	const apiConfig = writable<ApiConfig>({
 		base_url: '',
-		opacity: 0.8
+		opacity: 0.8,
+		maps: {
+			google: true,
+			openstreetmap: true,
+			bing: false,
+			streetviewvn: false,
+			mapillary: false,
+			vietbando: false,
+			herewego: false,
+			wikimapia: false,
+		}
 	});
 	const currentPoint = writable<MapPoint | null>(null);
 
@@ -73,6 +96,18 @@
 	let currentWindow: any;
 	let currentPosition = { x: 0, y: 0 };
 	let newBaseUrl = '';
+
+	// Định nghĩa các loại bản đồ với thông tin chi tiết
+	const mapTypes = [
+		{ id: 'google', name: 'Google Maps', icon: '🗺️', color: 'bg-red-500', default: true },
+		{ id: 'openstreetmap', name: 'OpenStreetMap', icon: '🌍', color: 'bg-green-500', default: true },
+		{ id: 'bing', name: 'Bing Maps', icon: '🅱️', color: 'bg-blue-500', default: false },
+		{ id: 'streetviewvn', name: 'StreetView.vn', icon: '👁️', color: 'bg-purple-500', default: false },
+		{ id: 'mapillary', name: 'Mapillary', icon: '📷', color: 'bg-yellow-500', default: false },
+		{ id: 'vietbando', name: 'Vietbando', icon: '🇻🇳', color: 'bg-red-600', default: false },
+		{ id: 'herewego', name: 'Here WeGo', icon: '📍', color: 'bg-blue-600', default: false },
+		{ id: 'wikimapia', name: 'Wikimapia', icon: '📖', color: 'bg-gray-500', default: false },
+	];
 
 	// Tạo ID duy nhất cho điểm
 	function generatePointId(): string {
@@ -86,12 +121,25 @@
 		}
 	}
 
+	function getMapEnabled(mapId: string): boolean {
+		return $apiConfig.maps[mapId as keyof MapConfig];
+	}
+
+	function toggleMap(mapId: string) {
+		apiConfig.update(config => {
+			const newMaps = { ...config.maps };
+			newMaps[mapId as keyof MapConfig] = !newMaps[mapId as keyof MapConfig];
+			return { ...config, maps: newMaps };
+		});
+	}
+
 	onMount(() => {
 		let unlistenProcessing: (() => void) | undefined;
 		let unlistenResult: (() => void) | undefined;
 		let unlistenError: (() => void) | undefined;
 		let unlistenUrlInput: (() => void) | undefined;
 		let unlistenOpacitySelector: (() => void) | undefined;
+		let unlistenMapSelector: (() => void) | undefined;
 
 		async function setupListeners() {
 			try {
@@ -142,6 +190,11 @@
 					console.log('Opening opacity selector');
 					showOpacitySelector.set(true);
 				});
+
+				unlistenMapSelector = await listen('open-map-selector', () => {
+					console.log('Opening map selector');
+					showMapSelector.set(true);
+				});
 			} catch (error) {
 				console.error('Error setting up event listeners:', error);
 			}
@@ -150,6 +203,19 @@
 		async function loadApiConfig() {
 			try {
 				const config: ApiConfig = await invoke('get_api_config');
+				// Đảm bảo cấu hình maps có đầy đủ các trường (nếu config cũ không có maps)
+				if (!config.maps) {
+					config.maps = {
+						google: true,
+						openstreetmap: true,
+						bing: false,
+						streetviewvn: false,
+						mapillary: false,
+						vietbando: false,
+						herewego: false,
+						wikimapia: false,
+					};
+				}
 				apiConfig.set(config);
 				updateContainerOpacity(config.opacity);
 			} catch (error) {
@@ -187,6 +253,7 @@
 			if (unlistenError) unlistenError();
 			if (unlistenUrlInput) unlistenUrlInput();
 			if (unlistenOpacitySelector) unlistenOpacitySelector();
+			if (unlistenMapSelector) unlistenMapSelector();
 		};
 	});
 
@@ -311,70 +378,61 @@
 		}
 	}
 
-	// Mở Google Maps trong webview
-	async function openGoogleMapsWebview(point: MapPoint) {
+	// Hàm lấy URL bản đồ theo loại
+	function getMapUrl(mapType: string, lat: number, lng: number): string {
+		switch (mapType) {
+			case 'google': return `https://www.google.com/maps?q=${lat},${lng}`;
+			case 'openstreetmap': return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}&zoom=17`;
+			case 'bing': return `https://www.bing.com/maps?cp=${lat}~${lng}&lvl=11&style=r`;
+			case 'streetviewvn': return `https://www.streetview.vn/?lat=${lat}&lng=${lng}`;
+			case 'mapillary': return `https://www.mapillary.com/app/?lat=${lat}&lng=${lng}&z=16.53889080546365&menu=false`;
+			case 'vietbando': return 'http://maps.vietbando.com/maps/';
+			case 'herewego': return `https://wego.here.com/?map=${lat},${lng},10`;
+			case 'wikimapia': return `https://wikimapia.org/#lang=en&lat=${lat}&lon=${lng}&z=12&m=w`;
+			default: return `https://www.google.com/maps?q=${lat},${lng}`;
+		}
+	}
+
+	// Mở bản đồ theo loại
+	async function openMap(point: MapPoint, mapType: string) {
 		try {
 			await invoke('open_map_view', {
 				lat: point.lat,
 				lng: point.lng,
-				mapType: 'google',
+				mapType: mapType,
 				pointId: point.id
 			});
 		} catch (error) {
-			console.error('Failed to open Google Maps webview:', error);
-			await openGoogleMapsExternal(point);
+			console.error(`Failed to open ${mapType}:`, error);
+			// Mở bằng trình duyệt external
+			const url = getMapUrl(mapType, point.lat, point.lng);
+			await open(url);
 		}
 	}
 
-	// Mở OpenStreetMap trong webview
-	async function openOpenStreetMapWebview(point: MapPoint) {
+	// Mở tất cả bản đồ được chọn
+	async function openAllSelectedMaps(point: MapPoint) {
 		try {
-			await invoke('open_map_view', {
+			await invoke('open_selected_maps', {
 				lat: point.lat,
 				lng: point.lng,
-				mapType: 'openstreetmap',
-				pointId: point.id
+				pointId: point.id,
+				mapConfig: $apiConfig.maps
 			});
 		} catch (error) {
-			console.error('Failed to open OpenStreetMap webview:', error);
-			await openOpenStreetMapExternal(point);
-		}
-	}
-
-	// Mở cả hai map cùng lúc
-	async function openBothMaps(point: MapPoint) {
-		try {
-			await invoke('open_multiple_map_views', {
-				lat: point.lat,
-				lng: point.lng,
-				pointId: point.id
-			});
-		} catch (error) {
-			console.error('Failed to open both maps:', error);
+			console.error('Failed to open selected maps:', error);
 			// Fallback: mở từng cái một
-			await openGoogleMapsWebview(point);
-			await openOpenStreetMapWebview(point);
+			for (const mapType of mapTypes) {
+				if ($apiConfig.maps[mapType.id as keyof MapConfig]) {
+					await openMap(point, mapType.id);
+				}
+			}
 		}
 	}
 
-	// Mở Google Maps trong trình duyệt external
-	async function openGoogleMapsExternal(point: MapPoint) {
-		const url = `https://www.google.com/maps?q=${point.lat},${point.lng}`;
-		try {
-			await open(url);
-		} catch (error) {
-			console.error('Failed to open Google Maps:', error);
-		}
-	}
-
-	// Mở OpenStreetMap trong trình duyệt external
-	async function openOpenStreetMapExternal(point: MapPoint) {
-		const url = `https://www.openstreetmap.org/?mlat=${point.lat}&mlon=${point.lng}&zoom=17`;
-		try {
-			await open(url);
-		} catch (error) {
-			console.error('Failed to open OpenStreetMap:', error);
-		}
+	// Đếm số bản đồ được chọn
+	function countSelectedMaps(): number {
+		return Object.values($apiConfig.maps).filter(v => v).length;
 	}
 </script>
 
@@ -401,28 +459,33 @@
 					</div>
 					<p class="text-[10px] text-yellow-400 font-medium">Processing</p>
 				{:else if $currentPoint}
-					<!-- Hiển thị 2 nút khi có kết quả -->
-					<div class="flex space-x-1 mb-1">
-						<button
-							class="w-20 h-20 bg-blue-500 rounded-full flex items-center justify-center shadow hover:bg-blue-600 transition-colors"
-							on:click={() => openGoogleMapsWebview($currentPoint)}
-							title="Open Google Maps"
-						>
-							<svg viewBox="0 0 24 24" fill="white" class="w-15 h-15">
-								<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
-							</svg>
-						</button>
-						<button
-							class="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center shadow hover:bg-green-600 transition-colors"
-							on:click={() => openOpenStreetMapWebview($currentPoint)}
-							title="Open OpenStreetMap"
-						>
-							<svg viewBox="0 0 24 24" fill="white" class="w-15 h-15">
-								<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-							</svg>
-						</button>
+					<!-- Hiển thị các nút bản đồ được chọn -->
+					<div class="grid grid-cols-2 gap-1 mb-1">
+						{#each mapTypes as map}
+							{#if getMapEnabled(map.id)}
+								<button
+									class="w-15 h-15 {map.color} rounded-full flex flex-col items-center justify-center shadow hover:opacity-90 transition-all text-white p-1"
+									on:click={() => openMap($currentPoint, map.id)}
+									title={map.name}
+								>
+									<div class="text-lg mb-0.5">{map.icon}</div>
+									<div class="text-[8px] font-medium leading-tight text-center">{map.name.split(' ')[0]}</div>
+								</button>
+							{/if}
+						{/each}
+						
+						<!-- Nút mở tất cả (nếu có nhiều hơn 1 bản đồ được chọn) -->
+						{#if countSelectedMaps() > 1}
+							<button
+								class="w-15 h-15 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex flex-col items-center justify-center shadow hover:opacity-90 transition-all text-white p-1"
+								on:click={() => openAllSelectedMaps($currentPoint)}
+								title="Open All Selected Maps"
+							>
+								<div class="text-lg mb-0.5">🚀</div>
+								<div class="text-[8px] font-medium leading-tight text-center">All</div>
+							</button>
+						{/if}
 					</div>
-					<p class="text-[8px] text-green-400 font-medium">Ready</p>
 				{:else}
 					<!-- Trạng thái bình thường -->
 					<div class="w-10 h-10 mx-auto mb-1 bg-primary-500 rounded-full flex items-center justify-center shadow-lg">
@@ -433,7 +496,6 @@
 					<p class="text-[10px] text-surface-400 font-medium">Geocoder</p>
 					<p class="text-[8px] text-surface-500">{$apiConfig.base_url ? 'Base URL set' : 'No URL'}</p>
 				{/if}
-				<p class="text-[7px] text-surface-400 mt-1">Drag to move</p>
 			</div>
 		</div>
 	</div>
@@ -457,8 +519,8 @@
 							Chỉ nhập base URL. Ứng dụng sẽ tự động gọi các endpoint:
 						</p>
 						<ul class="text-xs text-surface-500 mt-1 space-y-1">
-							<!-- <li>• <code class="bg-surface-700 px-1 rounded">/geocode?latlng={lat},{lng}</code> - Lấy thông tin địa chỉ</li>
-							<li>• <code class="bg-surface-700 px-1 rounded">/placedetails?place_id={place_id}</code> - Lấy chi tiết địa điểm</li> -->
+							<li>• <code class="bg-surface-700 px-1 rounded">/geocode?latlng&#123;lat&#125,&#123;lng&#125</code></li>
+							<li>• <code class="bg-surface-700 px-1 rounded">/placedetails?place_id=&#123;place_id&#125</code></li>
 						</ul>
 					</div>
 				</div>
@@ -494,28 +556,28 @@
 						class="w-full p-3 text-left rounded border {$apiConfig.opacity === 0.2 ? 'border-primary-500 bg-primary-500 bg-opacity-20' : 'border-surface-600 hover:border-surface-500'}"
 						on:click={() => updateOpacity(0.2)}
 					>
-						<div class="font-medium text-surface-200">20% - Rất trong</div>
+						<div class="font-medium text-surface-200">20%</div>
 					</button>
 					
 					<button
 						class="w-full p-3 text-left rounded border {$apiConfig.opacity === 0.5 ? 'border-primary-500 bg-primary-500 bg-opacity-20' : 'border-surface-600 hover:border-surface-500'}"
 						on:click={() => updateOpacity(0.5)}
 					>
-						<div class="font-medium text-surface-200">50% - Trong</div>
+						<div class="font-medium text-surface-200">50%</div>
 					</button>
 					
 					<button
 						class="w-full p-3 text-left rounded border {$apiConfig.opacity === 0.75 ? 'border-primary-500 bg-primary-500 bg-opacity-20' : 'border-surface-600 hover:border-surface-500'}"
 						on:click={() => updateOpacity(0.75)}
 					>
-						<div class="font-medium text-surface-200">75% - Hơi trong</div>
+						<div class="font-medium text-surface-200">75%</div>
 					</button>
 					
 					<button
 						class="w-full p-3 text-left rounded border {$apiConfig.opacity === 1 ? 'border-primary-500 bg-primary-500 bg-opacity-20' : 'border-surface-600 hover:border-surface-500'}"
 						on:click={() => updateOpacity(1)}
 					>
-						<div class="font-medium text-surface-200">100% - Đầy đủ</div>
+						<div class="font-medium text-surface-200">100%</div>
 					</button>
 				</div>
 				<div class="flex justify-end mt-6">
@@ -524,6 +586,55 @@
 						on:click={() => showOpacitySelector.set(false)}
 					>
 						Cancel
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Map Selector Popup -->
+	{#if $showMapSelector}
+		<div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+			<div class="bg-surface-800 rounded-lg p-6 w-96 max-h-96 overflow-y-auto">
+				<h3 class="text-lg font-semibold text-surface-200 mb-4">Select Maps to Display</h3>
+				<div class="space-y-2">
+					{#each mapTypes as map}
+						<label class="flex items-center justify-between p-3 rounded border border-surface-600 hover:border-surface-500 transition-colors cursor-pointer">
+							<div class="flex items-center space-x-3">
+								<div class="text-2xl">{map.icon}</div>
+								<div>
+									<div class="font-medium text-surface-200">{map.name}</div>
+									<!-- <div class="text-xs text-surface-500 truncate max-w-xs">{getMapUrl(map.id, 0, 0)}</div> -->
+								</div>
+							</div>
+							<input
+								type="checkbox"
+								class="w-5 h-5 rounded border-surface-600 bg-surface-700 text-primary-500 focus:ring-primary-500"
+								checked={getMapEnabled(map.id)}
+								on:change={() => toggleMap(map.id)}
+							/>
+						</label>
+					{/each}
+				</div>
+				<div class="flex justify-end space-x-3 mt-6">
+					<button
+						class="btn variant-filled-surface px-4"
+						on:click={() => showMapSelector.set(false)}
+					>
+						Cancel
+					</button>
+					<button
+						class="btn variant-filled-success px-4"
+						on:click={async () => {
+							try {
+								await invoke('update_api_config', { newConfig: $apiConfig });
+								showMapSelector.set(false);
+							} catch (error) {
+								console.error('Failed to update map selection:', error);
+							}
+						}}
+					>
+						Save
 					</button>
 				</div>
 			</div>
@@ -553,6 +664,15 @@
 					</svg>
 					Set Opacity
 				</button>
+				<button class="context-menu-item" on:click={() => {
+					showMapSelector.set(true);
+					showConfig.set(false);
+				}}>
+					<svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+					</svg>
+					Select Maps
+				</button>
 			</div>
 		</div>
 	{/if}
@@ -575,8 +695,8 @@
 
 	/* Floating mode - Tạo trong suốt giống Discord Gaming */
 	.floating-mode {
-		background: rgba(0, 0, 0, 0.5) !important; /* Giảm độ mờ */
-		backdrop-filter: blur(10px) !important; /* Giảm blur để tạo trong suốt */
+		background: rgba(0, 0, 0, 0.5) !important;
+		backdrop-filter: blur(10px) !important;
 		border: 1px solid rgba(255, 255, 255, 0.1);
 		border-radius: 12px;
 		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
@@ -819,5 +939,55 @@
 
 	.bg-green-500\.bg-opacity-20 {
 		background-color: rgba(34, 197, 94, 0.2);
+	}
+
+	/* Grid styles for map buttons */
+	.grid-cols-2 {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.gap-1 {
+		gap: 0.25rem;
+	}
+
+	.w-15 {
+		width: 3.75rem;
+	}
+
+	.h-15 {
+		height: 3.75rem;
+	}
+
+	.max-h-96 {
+		max-height: 24rem;
+	}
+
+	.overflow-y-auto {
+		overflow-y: auto;
+	}
+
+	.max-w-xs {
+		max-width: 20rem;
+	}
+
+	.truncate {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.from-purple-500 {
+		--tw-gradient-from: #a855f7;
+		--tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to, rgba(168, 85, 247, 0));
+	}
+
+	.to-pink-500 {
+		--tw-gradient-to: #ec4899;
+	}
+
+	/* Hiệu ứng hover cho nút bản đồ */
+	button:hover .text-lg {
+		transform: scale(1.1);
+		transition: transform 0.2s ease;
 	}
 </style>

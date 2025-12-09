@@ -113,12 +113,51 @@ pub struct ExampleResult {
     pub longitude: Option<f64>,
 }
 
-// Cấu hình API với base_url
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MapConfig {
+    google: bool,
+    openstreetmap: bool,
+    bing: bool,
+    streetviewvn: bool,
+    mapillary: bool,
+    vietbando: bool,
+    herewego: bool,
+    wikimapia: bool,
+}
+
+impl Default for MapConfig {
+    fn default() -> Self {
+        Self {
+            google: true,
+            openstreetmap: true,
+            bing: false,
+            streetviewvn: false,
+            mapillary: false,
+            vietbando: false,
+            herewego: false,
+            wikimapia: false,
+        }
+    }
+}
+
+// Cập nhật ApiConfig để bao gồm MapConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiConfig {
     base_url: String,
     opacity: f64,
+    maps: MapConfig,
 }
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "".to_string(),
+            opacity: 0.8,
+            maps: MapConfig::default(),
+        }
+    }
+}
+
 
 // State để lưu trữ window và dữ liệu mới nhất
 struct AppState {
@@ -127,6 +166,72 @@ struct AppState {
     pending_requests: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<ExampleResult>>>>,
     api_config: Arc<Mutex<ApiConfig>>,
     is_processing: Arc<Mutex<bool>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum MapType {
+    Google,
+    OpenStreetMap,
+    Bing,
+    StreetViewVN,
+    Mapillary,
+    Vietbando,
+    HereWeGo,
+    Wikimapia,
+}
+
+impl MapType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            MapType::Google => "google",
+            MapType::OpenStreetMap => "openstreetmap",
+            MapType::Bing => "bing",
+            MapType::StreetViewVN => "streetviewvn",
+            MapType::Mapillary => "mapillary",
+            MapType::Vietbando => "vietbando",
+            MapType::HereWeGo => "herewego",
+            MapType::Wikimapia => "wikimapia",
+        }
+    }
+    
+    fn get_url(&self, lat: f64, lng: f64) -> String {
+        match self {
+            MapType::Google => format!("https://www.google.com/maps?q={},{}", lat, lng),
+            MapType::OpenStreetMap => format!("https://www.openstreetmap.org/?mlat={}&mlon={}&zoom=17", lat, lng),
+            MapType::Bing => format!("https://www.bing.com/maps?cp={}~{}&lvl=11&style=r", lat, lng),
+            MapType::StreetViewVN => format!("https://www.streetview.vn/?lat={}&lng={}", lat, lng),
+            MapType::Mapillary => format!("https://www.mapillary.com/app/?lat={}&lng={}&z=16.53889080546365&menu=false", lat, lng),
+            MapType::Vietbando => "http://maps.vietbando.com/maps/".to_string(),
+            MapType::HereWeGo => format!("https://wego.here.com/?map={},{},10", lat, lng),
+            MapType::Wikimapia => format!("https://wikimapia.org/#lang=en&lat={}&lon={}&z=12&m=w", lat, lng),
+        }
+    }
+    
+    fn get_icon(&self) -> &'static str {
+        match self {
+            MapType::Google => "🗺️",
+            MapType::OpenStreetMap => "🌍",
+            MapType::Bing => "🅱️",
+            MapType::StreetViewVN => "👁️",
+            MapType::Mapillary => "📷",
+            MapType::Vietbando => "🇻🇳",
+            MapType::HereWeGo => "📍",
+            MapType::Wikimapia => "📖",
+        }
+    }
+    
+    fn get_name(&self) -> &'static str {
+        match self {
+            MapType::Google => "Google Maps",
+            MapType::OpenStreetMap => "OpenStreetMap",
+            MapType::Bing => "Bing Maps",
+            MapType::StreetViewVN => "StreetView.vn",
+            MapType::Mapillary => "Mapillary",
+            MapType::Vietbando => "Vietbando",
+            MapType::HereWeGo => "Here WeGo",
+            MapType::Wikimapia => "Wikimapia",
+        }
+    }
 }
 
 // Hàm lưu cấu hình vào file
@@ -692,8 +797,14 @@ async fn open_map_view(
     println!("Opening map view: {} at ({}, {}) for point {}", map_type, lat, lng, point_id);
     
     let url = match map_type.as_str() {
-        "google" => format!("https://www.google.com/maps?q={},{}", lat, lng),
-        "openstreetmap" => format!("https://www.openstreetmap.org/?mlat={}&mlon={}&zoom=17", lat, lng),
+        "google" => MapType::Google.get_url(lat, lng),
+        "openstreetmap" => MapType::OpenStreetMap.get_url(lat, lng),
+        "bing" => MapType::Bing.get_url(lat, lng),
+        "streetviewvn" => MapType::StreetViewVN.get_url(lat, lng),
+        "mapillary" => MapType::Mapillary.get_url(lat, lng),
+        "vietbando" => MapType::Vietbando.get_url(lat, lng),
+        "herewego" => MapType::HereWeGo.get_url(lat, lng),
+        "wikimapia" => MapType::Wikimapia.get_url(lat, lng),
         _ => return Err("Invalid map type".to_string()),
     };
     
@@ -751,6 +862,47 @@ async fn open_multiple_map_views(
     Ok(())
 }
 
+#[tauri::command]
+async fn open_selected_maps(
+    window: tauri::WebviewWindow,
+    lat: f64,
+    lng: f64,
+    point_id: String,
+    map_config: MapConfig,
+) -> Result<(), String> {
+    println!("Opening selected maps for point {} at ({}, {})", point_id, lat, lng);
+    
+    let maps_to_open = vec![
+        (MapType::Google, map_config.google),
+        (MapType::OpenStreetMap, map_config.openstreetmap),
+        (MapType::Bing, map_config.bing),
+        (MapType::StreetViewVN, map_config.streetviewvn),
+        (MapType::Mapillary, map_config.mapillary),
+        (MapType::Vietbando, map_config.vietbando),
+        (MapType::HereWeGo, map_config.herewego),
+        (MapType::Wikimapia, map_config.wikimapia),
+    ];
+    
+    for (map_type, enabled) in maps_to_open {
+        if enabled {
+            let url = map_type.get_url(lat, lng);
+            let window_id = format!("map_view_{}_{}", point_id, map_type.as_str());
+            
+            let _ = tauri::WebviewWindowBuilder::new(
+                &window,
+                &window_id,
+                tauri::WebviewUrl::External(url.parse().unwrap()),
+            )
+            .title(&format!("{} - {} ({}, {})", map_type.get_name(), point_id, lat, lng))
+            .inner_size(800.0, 600.0)
+            .min_inner_size(400.0, 300.0)
+            .build();
+        }
+    }
+    
+    Ok(())
+}
+
 impl Default for ExampleResult {
     fn default() -> Self {
         Self {
@@ -795,15 +947,6 @@ impl Default for ExampleResult {
     }
 }
 
-// Implement Default cho ApiConfig
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "".to_string(),
-            opacity: 0.8,
-        }
-    }
-}
 
 fn main() {
     // Load cấu hình từ file khi khởi động
@@ -828,10 +971,13 @@ fn main() {
             let set_url_item = MenuItem::with_id(app, "set_url", "Set Base URL", true, None::<&str>)?;
             let opacity_item = MenuItem::with_id(app, "opacity", "Set Opacity", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let select_maps_item = MenuItem::with_id(app, "select_maps", "Select Maps", true, None::<&str>)?;
+
             
             // Tạo separator items
             let separator1 = MenuItem::with_id(app, "sep1", "---", false, None::<&str>)?;
             let separator2 = MenuItem::with_id(app, "sep2", "---", false, None::<&str>)?;
+            let separator3 = MenuItem::with_id(app, "sep3", "---", false, None::<&str>)?;
             
             let menu = Menu::with_items(app, &[
                 &show_item,
@@ -839,6 +985,7 @@ fn main() {
                 &separator1,
                 &set_url_item,
                 &opacity_item,
+                &select_maps_item,
                 &separator2,
                 &quit_item,
             ])?;
@@ -869,6 +1016,12 @@ fn main() {
                         "opacity" => {
                             println!("Opacity menu item clicked");
                             let _ = window.emit("open-opacity-selector", ());
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        "select_maps" => {
+                            println!("Select Maps menu item clicked");
+                            let _ = window.emit("open-map-selector", ());
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -952,7 +1105,8 @@ fn main() {
             update_api_config,
             get_processing_state,
             open_map_view,
-            open_multiple_map_views
+            open_multiple_map_views,
+            open_selected_maps,
         ])
         .run(generate_context!())
         .expect("error while running Tauri application");
