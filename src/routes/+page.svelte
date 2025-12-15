@@ -58,6 +58,7 @@
 		base_url: string;
 		opacity: number;
 		maps: MapConfig;
+		default_perform: string; 
 	}
 
 	interface MapPoint {
@@ -74,6 +75,7 @@
 	const showUrlInput = writable<boolean>(false);
 	const showOpacitySelector = writable<boolean>(false);
 	const showMapSelector = writable<boolean>(false);
+	const showPerformInput = writable<boolean>(false); 
 	const isProcessing = writable<boolean>(false);
 	const apiConfig = writable<ApiConfig>({
 		base_url: '',
@@ -87,7 +89,8 @@
 			vietbando: false,
 			herewego: false,
 			wikimapia: false,
-		}
+		},
+		default_perform: '', 
 	});
 	const currentPoint = writable<MapPoint | null>(null);
 
@@ -96,6 +99,7 @@
 	let currentWindow: any;
 	let currentPosition = { x: 0, y: 0 };
 	let newBaseUrl = '';
+	let newPerformValue = '';
 
 	// Định nghĩa các loại bản đồ với thông tin chi tiết
 	const mapTypes = [
@@ -140,6 +144,7 @@
 		let unlistenUrlInput: (() => void) | undefined;
 		let unlistenOpacitySelector: (() => void) | undefined;
 		let unlistenMapSelector: (() => void) | undefined;
+		let unlistenPerformInput: (() => void) | undefined; // THÊM: Listener cho perform input
 
 		async function setupListeners() {
 			try {
@@ -195,6 +200,13 @@
 					console.log('Opening map selector');
 					showMapSelector.set(true);
 				});
+
+				// THÊM: Lắng nghe sự kiện mở dialog nhập perform
+				unlistenPerformInput = await listen('open-perform-input', () => {
+					console.log('Opening perform input');
+					newPerformValue = $apiConfig.default_perform;
+					showPerformInput.set(true);
+				});
 			} catch (error) {
 				console.error('Error setting up event listeners:', error);
 			}
@@ -203,7 +215,7 @@
 		async function loadApiConfig() {
 			try {
 				const config: ApiConfig = await invoke('get_api_config');
-				// Đảm bảo cấu hình maps có đầy đủ các trường (nếu config cũ không có maps)
+				// Đảm bảo cấu hình có đầy đủ các trường
 				if (!config.maps) {
 					config.maps = {
 						google: true,
@@ -215,6 +227,10 @@
 						herewego: false,
 						wikimapia: false,
 					};
+				}
+				// Đảm bảo có trường default_perform
+				if (config.default_perform === undefined) {
+					config.default_perform = '';
 				}
 				apiConfig.set(config);
 				updateContainerOpacity(config.opacity);
@@ -254,6 +270,7 @@
 			if (unlistenUrlInput) unlistenUrlInput();
 			if (unlistenOpacitySelector) unlistenOpacitySelector();
 			if (unlistenMapSelector) unlistenMapSelector();
+			if (unlistenPerformInput) unlistenPerformInput(); // THÊM: Hủy listener
 		};
 	});
 
@@ -378,6 +395,22 @@
 		}
 	}
 
+	// THÊM: Cập nhật perform value
+	async function updatePerformValue() {
+		try {
+			const newConfig: ApiConfig = {
+				...$apiConfig,
+				default_perform: newPerformValue
+			};
+			await invoke('update_api_config', { newConfig });
+			apiConfig.set(newConfig);
+			showPerformInput.set(false);
+			newPerformValue = '';
+		} catch (error) {
+			console.error('Failed to update perform value:', error);
+		}
+	}
+
 	// Hàm lấy URL bản đồ theo loại
 	function getMapUrl(mapType: string, lat: number, lng: number): string {
 		switch (mapType) {
@@ -495,6 +528,9 @@
 					</div>
 					<p class="text-[10px] text-surface-400 font-medium">Geocoder</p>
 					<p class="text-[8px] text-surface-500">{$apiConfig.base_url ? 'Base URL set' : 'No URL'}</p>
+					{#if $apiConfig.default_perform}
+						<p class="text-[8px] text-green-500 mt-1">Perform: {$apiConfig.default_perform}</p>
+					{/if}
 				{/if}
 			</div>
 		</div>
@@ -641,6 +677,57 @@
 		</div>
 	{/if}
 
+	<!-- THÊM: Perform Value Input Popup -->
+	{#if $showPerformInput}
+		<div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+			<div class="bg-surface-800 rounded-lg p-6 w-96">
+				<h3 class="text-lg font-semibold text-surface-200 mb-4">Set Perform Value</h3>
+				<div class="space-y-4">
+					<div>
+						<label for="perform-input" class="block text-sm font-medium text-surface-400 mb-2">Perform Value</label>
+						<input
+							id="perform-input"
+							type="text"
+							class="w-full bg-surface-700 border border-surface-600 rounded px-3 py-2 text-surface-200"
+							placeholder="Enter perform value..."
+							bind:value={newPerformValue}
+						/>
+						<p class="text-xs text-surface-500 mt-1">
+							Giá trị này sẽ được thêm vào field "perform" của tất cả các kết quả geocoding.
+						</p>
+						<p class="text-xs text-surface-500 mt-1">
+							Ví dụ: "14-HoaiPhuong", v.v.
+						</p>
+					</div>
+					{#if $apiConfig.default_perform}
+						<div class="bg-surface-700 p-3 rounded">
+							<p class="text-sm text-surface-400">Giá trị perform hiện tại:</p>
+							<p class="text-lg font-semibold text-surface-200 mt-1">{$apiConfig.default_perform}</p>
+						</div>
+					{/if}
+				</div>
+				<div class="flex justify-end space-x-3 mt-6">
+					<button
+						class="btn variant-filled-surface px-4"
+						on:click={() => {
+							showPerformInput.set(false);
+							newPerformValue = '';
+						}}
+					>
+						Cancel
+					</button>
+					<button
+						class="btn variant-filled-success px-4"
+						on:click={updatePerformValue}
+						disabled={!newPerformValue.trim()}
+					>
+						Save
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	<!-- System Tray Context Menu -->
 	{#if $showConfig}
 		<div class="context-menu-overlay" role="presentation" on:click|self={() => showConfig.set(false)}>
@@ -663,6 +750,17 @@
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4"/>
 					</svg>
 					Set Opacity
+				</button>
+				<!-- THÊM: Nút Set Perform vào context menu -->
+				<button class="context-menu-item" on:click={() => {
+					newPerformValue = $apiConfig.default_perform;
+					showPerformInput.set(true);
+					showConfig.set(false);
+				}}>
+					<svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+					</svg>
+					Set Perform Value
 				</button>
 				<button class="context-menu-item" on:click={() => {
 					showMapSelector.set(true);
@@ -985,7 +1083,6 @@
 		--tw-gradient-to: #ec4899;
 	}
 
-	/* Hiệu ứng hover cho nút bản đồ */
 	button:hover .text-lg {
 		transform: scale(1.1);
 		transition: transform 0.2s ease;

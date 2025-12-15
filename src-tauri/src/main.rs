@@ -15,6 +15,8 @@ use tauri::{
     generate_context,
 };
 use reqwest;
+use chrono::{DateTime, FixedOffset, Utc};
+use chrono::offset::TimeZone;
 
 #[derive(Deserialize)]
 struct IncomingData {
@@ -140,12 +142,12 @@ impl Default for MapConfig {
     }
 }
 
-// Cập nhật ApiConfig để bao gồm MapConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiConfig {
     base_url: String,
     opacity: f64,
     maps: MapConfig,
+    default_perform: String,
 }
 
 impl Default for ApiConfig {
@@ -154,6 +156,7 @@ impl Default for ApiConfig {
             base_url: "".to_string(),
             opacity: 0.8,
             maps: MapConfig::default(),
+            default_perform: "".to_string(),
         }
     }
 }
@@ -338,12 +341,10 @@ async fn call_placedetails_api(place_id: &str, base_url: &str) -> Result<Example
     Ok(result)
 }
 
-// Hàm parse dữ liệu từ Google Geocoding API
 pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
     let mut result = ExampleResult {
-        status: "success".to_string(),
+        status: "A".to_string(), 
         address: "".to_string(),
-
         poi_vn: None,
         poi_en: None,
         poi_ex: None,
@@ -370,26 +371,25 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
         note: None,
         done: None,
         update_: None,
-        source: None,
+        source: Some("Googlemap".to_string()),
         gen_type: None,
         perform: None,
+        
         dup: None,
-        explain: None,
-        classify: None,
+        explain: Some("4-Build_update".to_string()),
+        classify: Some("P-Private".to_string()),
         dtrend: None,
-
         google_id: None,
         be_id: None,
-
         plus_code: None,
         latitude: None,
         longitude: None,
     };
 
-    // Lấy status
     if let Some(status) = response["status"].as_str() {
         if status != "OK" {
-            result.status = status.to_string();
+            result.status = "D".to_string(); 
+            result.status_detail = Some(format!("Google API error: {}", status));
             return result;
         }
     }
@@ -417,7 +417,6 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
 
             let is = |t: &str| types.iter().any(|x| x.as_str() == Some(t));
 
-            // Map vào các trường yêu cầu
             if is("premise") || is("point_of_interest") {
                 result.poi_vn = Some(long.clone());
             }
@@ -446,53 +445,169 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
     result
 }
 
-// Hàm parse dữ liệu từ Google Places Details API
+
 pub fn parse_placedetails_response(response: Value) -> ExampleResult {
     let mut result = ExampleResult::default();
 
-    // Lấy status
     if let Some(status) = response["status"].as_str() {
         if status != "OK" {
-            result.status = status.to_string();
+            result.status = "D".to_string();
+            result.status_detail = Some(format!("Places API error: {}", status));
             return result;
         }
     }
 
     let detail = &response["result"];
 
-    // Lấy name cho poi_vn
     if let Some(name) = detail["name"].as_str() {
         result.poi_vn = Some(name.to_string());
     }
 
-    // Lấy formatted_phone_number cho phone
     if let Some(phone) = detail["formatted_phone_number"].as_str() {
         result.phone = Some(phone.to_string());
     }
 
-    // Lấy website cho web
     if let Some(web) = detail["website"].as_str() {
         result.web = Some(web.to_string());
     }
 
-    // Lấy url cho source
-    // if let Some(url) = detail["url"].as_str() {
-    //     result.source = Some(url.to_string());
-    // }
+    // Parse type và sub_type từ types array
+    if let Some(types_array) = detail["types"].as_array() {
+        // Tạo mapping từ bảng
+        let type_mapping: Vec<(&str, &str)> = vec![
+            ("accounting", "Bu6"),
+            ("airport", "Tran5"),
+            ("amusement_park", "Rec5"),
+            ("aquarium", "Shop2"),
+            ("art_gallery", "Ent1"),
+            ("atm", "Bu1"),
+            ("bakery", "FD2"),
+            ("bank", "Bu2"),
+            ("bar", "FD1"),
+            ("beauty_salon", "Shop2"),
+            ("bicycle_store", "Shop2"),
+            ("book_store", "Se1"),
+            ("bowling_alley", ""),
+            ("bus_station", "Tran4"),
+            ("cafe", "FD3"),
+            ("campground", "Si1"),
+            ("car_dealer", "Au1"),
+            ("car_rental", "Au1"),
+            ("car_repair", "Au4"),
+            ("car_wash", "Au4"),
+            ("casino", ""),
+            ("cemetery", "Si5"),
+            ("church", "Si2"),
+            ("city_hall", ""),
+            ("clothing_store", "Shop2"),
+            ("convenience_store", "Shop2"),
+            ("courthouse", "Gov2"),
+            ("dentist", "Eme2"),
+            ("department_store", "Shop2"),
+            ("doctor", "Eme6"),
+            ("drugstore", "Eme1"),
+            ("electrician", "Shop2"),
+            ("electronics_store", "Shop2"),
+            ("embassy", "Gov6"),
+            ("fire_station", "Eme4"),
+            ("florist", "Shop2"),
+            ("funeral_home", "Si5"),
+            ("furniture_store", "Shop2"),
+            ("gas_station", "Au3"),
+            ("gym", "Rec8"),
+            ("hair_care", "Shop2"),
+            ("hardware_store", "Shop2"),
+            ("hindu_temple", "Si4"),
+            ("home_goods_store", "Shop2"),
+            ("hospital", "Eme3"),
+            ("insurance_agency", "Bu6"),
+            ("jewelry_store", "Shop2"),
+            ("laundry", "Shop2"),
+            ("lawyer", "Bu6"),
+            ("library", "Se1"),
+            ("light_rail_station", "Tran1"),
+            ("liquor_store", "FD2"),
+            ("local_government_office", "Gov7"),
+            ("locksmith", ""),
+            ("lodging", "Lod1, Lod2, Lod3"),
+            ("meal_delivery", ""),
+            ("meal_takeaway", ""),
+            ("mosque", "Si2"),
+            ("movie_rental", ""),
+            ("movie_theater", "Ent5"),
+            ("moving_company", "Bu6"),
+            ("museum", "Ent2"),
+            ("night_club", "FD1"),
+            ("painter", ""),
+            ("park", "Rec5"),
+            ("parking", "Au2"),
+            ("pet_store", ""),
+            ("pharmacy", "Eme1"),
+            ("physiotherapist", "Eme6"),
+            ("plumber", ""),
+            ("police", "Eme5"),
+            ("post_office", "Se3"),
+            ("primary_school", "Edu1"),
+            ("real_estate_agency", "Bu6"),
+            ("restaurant", "FD2"),
+            ("roofing_contractor", "Bu6"),
+            ("rv_park", "Rec5"),
+            ("school", ""),
+            ("secondary_school", "Edu2"),
+            ("shoe_store", "Shop2"),
+            ("shopping_mall", "Shop1"),
+            ("spa", "Rec4"),
+            ("stadium", "Rec3"),
+            ("storage", ""),
+            ("store", "Shop2"),
+            ("subway_station", "Tran1"),
+            ("supermarket", "Shop4"),
+            ("synagogue", "Si2"),
+            ("taxi_stand", ""),
+            ("tourist_attraction", "Si1"),
+            ("train_station", "Tran1"),
+            ("transit_station", "Tran4"),
+            ("travel_agency", "Se2"),
+            ("university", "Edu4"),
+            ("veterinary_care", "Eme6"),
+            ("zoo", "Ent6"),
+        ];
+
+        // Tìm type_google đầu tiên trong mảng types mà có trong mapping
+        for google_type in types_array {
+            if let Some(google_type_str) = google_type.as_str() {
+                if let Some(&(_, sub_type)) = type_mapping.iter()
+                    .find(|&&(type_name, _)| type_name == google_type_str) {
+                    
+                    if !google_type_str.is_empty() {
+                        result.r#type = Some(google_type_str.to_string());
+                    }
+                    
+                    if !sub_type.is_empty() {
+                        result.sub_type = Some(sub_type.to_string());
+                    }
+                    
+                    // Chỉ lấy type đầu tiên tìm thấy
+                    break;
+                }
+            }
+        }
+    }
 
     result
 }
 
-// Hàm gọi Custom API (kết hợp geocode và placedetails)
-async fn call_custom_api(lat: f64, lng: f64, base_url: &str) -> Result<ExampleResult, Box<dyn std::error::Error>> {
-    // Bước 1: Gọi geocode API
-    let mut result = call_geocode_api(lat, lng, base_url).await?;
 
-    // Bước 2: Nếu có place_id, gọi placedetails API để lấy thêm thông tin
+async fn call_custom_api(lat: f64, lng: f64, base_url: &str, default_perform: &str) -> Result<ExampleResult, Box<dyn std::error::Error>> {
+    let mut result = call_geocode_api(lat, lng, base_url).await?;
+    
+    if !default_perform.is_empty() {
+        result.perform = Some(default_perform.to_string());
+    }
+
     if let Some(place_id) = &result.google_id {
         match call_placedetails_api(place_id, base_url).await {
             Ok(details) => {
-                // Cập nhật thông tin từ placedetails vào result
                 if let Some(poi_vn) = details.poi_vn {
                     result.poi_vn = Some(poi_vn);
                 }
@@ -502,16 +617,28 @@ async fn call_custom_api(lat: f64, lng: f64, base_url: &str) -> Result<ExampleRe
                 if let Some(web) = details.web {
                     result.web = Some(web);
                 }
-                if let Some(source) = details.source {
-                    result.source = Some(source);
+                // Thêm parse cho type và sub_type
+                if let Some(type_val) = details.r#type {
+                    result.r#type = Some(type_val);
+                }
+                if let Some(sub_type) = details.sub_type {
+                    result.sub_type = Some(sub_type);
                 }
             }
             Err(e) => {
                 println!("Error calling placedetails API: {}", e);
-                // Không fail vì geocode đã thành công, chỉ in lỗi
+                result.status_detail = Some(format!("Placedetails API error: {}", e));
             }
         }
     }
+
+    // Thêm ngày cập nhật (GMT+7) với định dạng dd/mm/yyyy
+    let gmt_plus_7 = FixedOffset::east_opt(7 * 3600).unwrap(); // GMT+7
+    let now_utc = Utc::now();
+    let now_gmt7 = gmt_plus_7.from_utc_datetime(&now_utc.naive_utc());
+    
+    result.update_ = Some(now_gmt7.format("%d/%m/%Y").to_string());
+
 
     Ok(result)
 }
@@ -533,7 +660,6 @@ fn start_local_server(app_state: Arc<AppState>) {
             if request.method() == &Method::Post && request.url() == "/process" {
                 println!("Received request from Addin!");
 
-                // Đọc body
                 let mut content = String::new();
                 if let Err(e) = request.as_reader().read_to_string(&mut content) {
                     println!("Error reading request body: {}", e);
@@ -554,27 +680,22 @@ fn start_local_server(app_state: Arc<AppState>) {
                 };
                 println!("Lat = {}, Lon = {}", parsed.lat, parsed.lng);
 
-                // Clone app_state để sử dụng trong async block
                 let state_clone = Arc::clone(&app_state);
                 
-                // Tạo channel để đợi kết quả
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 
-                // Thêm request vào pending
                 {
                     if let Ok(mut pending) = state_clone.pending_requests.lock() {
                         pending.push(tx);
                     }
                 }
                 
-                // Set processing state
                 {
                     if let Ok(mut processing) = state_clone.is_processing.lock() {
                         *processing = true;
                     }
                 }
 
-                // Gửi sự kiện đến frontend để cập nhật UI
                 {
                     if let Ok(window_lock) = state_clone.window.lock() {
                         if let Some(window) = &*window_lock {
@@ -583,11 +704,9 @@ fn start_local_server(app_state: Arc<AppState>) {
                     }
                 }
                 
-                // Tạo runtime cho async function
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 
                 let response_json = rt.block_on(async {
-                    // Lấy cấu hình API hiện tại
                     let config = {
                         if let Ok(config_lock) = state_clone.api_config.lock() {
                             config_lock.clone()
@@ -597,19 +716,17 @@ fn start_local_server(app_state: Arc<AppState>) {
                     };
 
                     let result = if !config.base_url.is_empty() {
-                        call_custom_api(parsed.lat, parsed.lng, &config.base_url).await
+                        call_custom_api(parsed.lat, parsed.lng, &config.base_url, &config.default_perform).await
                     } else {
                         Err("Base URL not configured".into())
                     };
 
                     match result {
                         Ok(result) => {
-                            // Lưu dữ liệu mới nhất vào state
                             if let Ok(mut latest_data) = state_clone.latest_data.lock() {
                                 *latest_data = Some(result.clone());
                             }
                             
-                            // Gửi sự kiện đến frontend để cập nhật kết quả
                             if let Ok(window_lock) = state_clone.window.lock() {
                                 if let Some(window) = &*window_lock {
                                     let _ = window.emit("update-result", &result);
@@ -620,29 +737,29 @@ fn start_local_server(app_state: Arc<AppState>) {
                         },
                         Err(e) => {
                             println!("Error calling API: {}", e);
-                            // Gửi sự kiện lỗi đến frontend
                             if let Ok(window_lock) = state_clone.window.lock() {
                                 if let Some(window) = &*window_lock {
                                     let _ = window.emit("show-error", format!("API Error: {}", e));
                                 }
                             }
                             ExampleResult {
-                                status: "error".into(),
+                                status: "D".into(), 
                                 address: format!("API Error: {}", e),
+                                source: Some("Googlemap".to_string()),
+                                explain: Some("4-Build_update".to_string()),
+                                classify: Some("P-Private".to_string()),
                                 ..Default::default()
                             }
                         }
                     }
                 });
 
-                // Clear processing state
                 {
                     if let Ok(mut processing) = state_clone.is_processing.lock() {
                         *processing = false;
                     }
                 }
 
-                // Gửi sự kiện đến frontend để cập nhật UI
                 {
                     if let Ok(window_lock) = state_clone.window.lock() {
                         if let Some(window) = &*window_lock {
@@ -655,7 +772,7 @@ fn start_local_server(app_state: Arc<AppState>) {
                     Ok(text) => text,
                     Err(e) => {
                         println!("Error serializing response: {}", e);
-                        format!("{{\"status\":\"error\",\"address\":\"Serialization error: {}\"}}", e)
+                        format!("{{\"status\":\"D\",\"address\":\"Serialization error: {}\",\"source\":\"Googlemap\",\"explain\":\"4-Build_update\",\"classify\":\"P-Private\"}}", e)
                     }
                 };
 
@@ -668,13 +785,13 @@ fn start_local_server(app_state: Arc<AppState>) {
                 continue;
             }
 
-            // Handle other routes
             request
                 .respond(Response::from_string("Invalid route"))
                 .unwrap();
         }
     });
 }
+
 
 // ==================== TAURI COMMANDS ====================
 
@@ -906,7 +1023,7 @@ async fn open_selected_maps(
 impl Default for ExampleResult {
     fn default() -> Self {
         Self {
-            status: "error".into(),
+            status: "D".into(),
             address: "".into(),
 
             poi_vn: None,
@@ -931,12 +1048,12 @@ impl Default for ExampleResult {
             note: None,
             done: None,
             update_: None,
-            source: None,
+            source: Some("Googlemap".to_string()),
             gen_type: None,
             perform: None,
             dup: None,
-            explain: None,
-            classify: None,
+            explain: Some("4-Build_update".to_string()),
+            classify: Some("P-Private".to_string()),
             dtrend: None,
             google_id: None,
             be_id: None,
@@ -946,6 +1063,7 @@ impl Default for ExampleResult {
         }
     }
 }
+
 
 
 fn main() {
@@ -965,16 +1083,16 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
-            // Tạo system tray menu
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
             let hide_item = MenuItem::with_id(app, "hide", "Hide Window", true, None::<&str>)?;
             let set_url_item = MenuItem::with_id(app, "set_url", "Set Base URL", true, None::<&str>)?;
             let opacity_item = MenuItem::with_id(app, "opacity", "Set Opacity", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let select_maps_item = MenuItem::with_id(app, "select_maps", "Select Maps", true, None::<&str>)?;
-
             
-            // Tạo separator items
+            let set_perform_item = MenuItem::with_id(app, "set_perform", "Set Perform Value", true, None::<&str>)?;
+            
+            let select_maps_item = MenuItem::with_id(app, "select_maps", "Select Maps", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+
             let separator1 = MenuItem::with_id(app, "sep1", "---", false, None::<&str>)?;
             let separator2 = MenuItem::with_id(app, "sep2", "---", false, None::<&str>)?;
             let separator3 = MenuItem::with_id(app, "sep3", "---", false, None::<&str>)?;
@@ -985,12 +1103,12 @@ fn main() {
                 &separator1,
                 &set_url_item,
                 &opacity_item,
+                &set_perform_item, 
                 &select_maps_item,
                 &separator2,
                 &quit_item,
             ])?;
 
-            // Tạo system tray
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -1019,6 +1137,12 @@ fn main() {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
+                        "set_perform" => {
+                            println!("Set Perform menu item clicked");
+                            let _ = window.emit("open-perform-input", ());
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
                         "select_maps" => {
                             println!("Select Maps menu item clicked");
                             let _ = window.emit("open-map-selector", ());
@@ -1030,7 +1154,6 @@ fn main() {
                             app.exit(0);
                         }
                         "sep1" | "sep2" => {
-                            // Bỏ qua separator items
                         }
                         _ => {
                             println!("Unknown menu item: {:?}", event.id);
@@ -1061,18 +1184,15 @@ fn main() {
 
             let main_window = app.get_webview_window("main").unwrap();
             
-            // Cấu hình window floating - Ẩn khỏi taskbar
             main_window.set_always_on_top(true).unwrap();
             main_window.set_decorations(false).unwrap();
             main_window.set_skip_taskbar(true).unwrap();
             
-            // Đặt kích thước nhỏ (icon)
             main_window.set_size(tauri::Size::Logical(tauri::LogicalSize { 
                 width: 60.0, 
                 height: 60.0 
             })).unwrap();
             
-            // Đặt vị trí góc trên bên phải
             if let Ok(monitor) = main_window.primary_monitor() {
                 if let Some(monitor) = monitor {
                     let screen_size = monitor.size();
@@ -1083,10 +1203,8 @@ fn main() {
                 }
             }
 
-            // Ẩn window khi khởi động, chỉ hiện system tray
             let _ = main_window.hide();
 
-            // Lưu window reference vào state
             if let Ok(mut window_lock) = state_clone.window.lock() {
                 *window_lock = Some(main_window);
             }
