@@ -376,8 +376,8 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
         perform: None,
         
         dup: None,
-        explain: Some("4-Build_update".to_string()),
-        classify: Some("P-Private".to_string()),
+        explain: Some("4".to_string()),
+        classify: Some("P".to_string()),
         dtrend: None,
         google_id: None,
         be_id: None,
@@ -433,7 +433,17 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
                 result.sub_com = Some(long.clone());
             }
             if is("route") {
-                result.st_name = Some(long.clone());
+                // Loại bỏ "Đường " ở đầu chuỗi nếu có
+                let cleaned_name = if long.starts_with("Đường ") {
+                    long.replacen("Đường ", "", 1)
+                } else if long.starts_with("đường ") {
+                    long.replacen("đường ", "", 1)
+                } else if long.starts_with("Đ. ") {
+                    long.replacen("Đ. ", "", 1)
+                } else {
+                    long.clone()
+                };
+                result.st_name = Some(cleaned_name);
             }
         }
     }
