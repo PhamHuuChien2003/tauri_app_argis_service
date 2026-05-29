@@ -32,6 +32,8 @@ struct MapViewRequest {
     point_id: String, 
 }
 
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExampleResult {
     // luôn có (không phải Option)
@@ -237,6 +239,18 @@ impl MapType {
     }
 }
 
+/// Tính khoảng cách (mét) giữa hai điểm theo công thức Haversine
+fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let r = 6371000.0; // bán kính Trái Đất (m)
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos()
+        * (dlon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    r * c
+}
+
 // Hàm lưu cấu hình vào file
 fn save_config(config: &ApiConfig) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = get_config_path()?;
@@ -421,7 +435,16 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
                 result.poi_vn = Some(long.clone());
             }
             if is("street_number") {
-                result.house_num = Some(long.clone());
+                let mut house = long.clone();
+                // Loại bỏ tất cả các số 0 ở đầu
+                let trimmed = house.trim_start_matches('0');
+                if trimmed.is_empty() {
+                    // Trường hợp chuỗi chỉ toàn số 0 (ví dụ "00" -> "0")
+                    house = "0".to_string();
+                } else {
+                    house = trimmed.to_string();
+                }
+                result.house_num = Some(house);
             }
             if is("floor") || is("room") {
                 result.room = Some(long.clone());
@@ -433,15 +456,18 @@ pub fn parse_google_geocoding_response(response: Value) -> ExampleResult {
                 result.sub_com = Some(long.clone());
             }
             if is("route") {
-                // Loại bỏ "Đường " ở đầu chuỗi nếu có
-                let cleaned_name = if long.starts_with("Đường ") {
-                    long.replacen("Đường ", "", 1)
-                } else if long.starts_with("đường ") {
-                    long.replacen("đường ", "", 1)
-                } else if long.starts_with("Đ. ") {
-                    long.replacen("Đ. ", "", 1)
+                // Chuẩn hóa unicode trước khi kiểm tra
+                let normalized_long = unicode_normalization::UnicodeNormalization::nfc(long.chars())
+                    .collect::<String>();
+                
+                let cleaned_name = if normalized_long.starts_with("Đường ") {
+                    normalized_long.replacen("Đường ", "", 1)
+                } else if normalized_long.starts_with("đường ") {
+                    normalized_long.replacen("đường ", "", 1)
+                } else if normalized_long.starts_with("Đ. ") {
+                    normalized_long.replacen("Đ. ", "", 1)
                 } else {
-                    long.clone()
+                    normalized_long
                 };
                 result.st_name = Some(cleaned_name);
             }
@@ -479,6 +505,12 @@ pub fn parse_placedetails_response(response: Value) -> ExampleResult {
 
     if let Some(web) = detail["website"].as_str() {
         result.web = Some(web.to_string());
+    }
+
+    // Lấy tọa độ từ geometry.location (nếu có)
+    if let Some(loc) = detail["geometry"]["location"].as_object() {
+        result.latitude = loc.get("lat").and_then(|v| v.as_f64());
+        result.longitude = loc.get("lng").and_then(|v| v.as_f64());
     }
 
     // Parse type và sub_type từ types array
@@ -618,6 +650,18 @@ async fn call_custom_api(lat: f64, lng: f64, base_url: &str, default_perform: &s
     if let Some(place_id) = &result.google_id {
         match call_placedetails_api(place_id, base_url).await {
             Ok(details) => {
+                // --- KIỂM TRA KHOẢNG CÁCH ---
+                if let (Some(detail_lat), Some(detail_lng)) = (details.latitude, details.longitude) {
+                    let distance = haversine_distance(lat, lng, detail_lat, detail_lng);
+                    println!("Distance between original ({},{}) and place details ({},{}): {:.2} meters",
+                             lat, lng, detail_lat, detail_lng, distance);
+                    if distance > 50.0 {
+                        result.status = "D".to_string();
+                        result.status_detail = Some(format!("Không có điểm phù hợp (khoảng cách {:.1}m > 50m)", distance));
+                    }
+                } else {
+                    println!("Warning: Place Details does not contain coordinates");
+                }
                 if let Some(poi_vn) = details.poi_vn {
                     result.poi_vn = Some(poi_vn);
                 }
